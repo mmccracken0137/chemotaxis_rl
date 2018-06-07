@@ -1,7 +1,7 @@
 '''
 Policy-gradient chemotaxis learner
 ***MUST*** be run with pythonw in order to properly focus the window.
-Adapted from https://github.com/awjuliani/DeepRL-Agents/blob/master/Vanilla-Policy.ipynb
+Adapted from https://github.com/awjuliani/DeepRL-Agents/blob/master/Policy-Network.ipynb
 '''
 
 import pygame
@@ -86,37 +86,43 @@ pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad.pixe
 ### initialize rover
 rover = Rover(int(size[0]/2), int(size[1]/2), np.random.rand() * 360, width = 20, length = 40)
 
-running = True
 clock = pygame.time.Clock()
 
-steps = 0
+max_epis = 50
 
-while running:
-    clock.tick(30)
-
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False # Flag that we are done so we exit this loop
-
-    # --- Game logic should go here ---> update
-    #rover.rotate_left(1)
-    #all_sprites.update()
-
-    # --- Drawing code should go here ---> draw
-    screen.fill((255,255,255))
+for epi in range(max_epis):
+    steps = 0
+    rover.force_position(300, 150, np.random.rand() * 360)
     pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad.pixels))
-    rover.dual_wheel_move(1, -0.666)
-    rover.update()
-    rover.rover_draw(screen)
-    #print(rover.observation(grad, [rover.h_point, rover.t_point]))
+    running = True
 
-    # --- Go ahead and update the screen with what we've drawn.
-    #if steps % 10 == 0:
-    #    print(rover.h_point, rover.read_h_rgb(screen))
+    while running:
+        clock.tick(30)
 
-    pygame.display.flip()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False # Flag that we are done so we exit this loop
 
-    steps += 1
+        # --- Game logic should go here ---> update
+        #rover.rotate_left(1)
+        #all_sprites.update()
+
+        # --- Drawing code should go here ---> draw
+        screen.fill((255,255,255))
+        pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad.pixels))
+        #rover.dual_wheel_move(2*np.random.rand(), 2*np.random.rand())
+        rover.dual_wheel_move(2, 2)
+        rover.update()
+        rover.rover_draw(screen)
+        #print(rover.observation(grad, [rover.h_point, rover.t_point])[0])
+
+        # --- Go ahead and update the screen with what we've drawn.
+        pygame.display.flip()
+
+        steps += 1
+
+        if np.array_equal([255, 255, 255], rover.observation(grad, [rover.h_point, rover.t_point])[0]):
+            running = False
 
 #Once we have exited the main program loop we can stop the game engine:
 pygame.quit()

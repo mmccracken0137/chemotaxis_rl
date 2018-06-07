@@ -39,6 +39,24 @@ class Rover():
         self.theta = 0
         self.last_update = 0.0
 
+    def reset_position(self, xpos = 0, ypos = 0, theta = 0):
+        self.theta = theta
+        self.theta_rad = self.theta*np.pi/180.0
+        self.center = [xpos, ypos]
+        self.l_point = [self.center[0] + 0.5*self.width*np.cos(self.theta_rad - np.pi/2.0),
+        self.center[1] + 0.5*self.width*np.sin(self.theta_rad - np.pi/2.0)]
+        self.r_point = [self.center[0] - 0.5*self.width*np.cos(self.theta_rad - np.pi/2.0),
+        self.center[1] - 0.5*self.width*np.sin(self.theta_rad - np.pi/2.0)]
+        self.h_point = [self.center[0] + 0.5*self.length*np.cos(self.theta_rad),
+        self.center[1] + 0.5*self.length*np.sin(self.theta_rad)]
+        self.t_point = [self.center[0] - 0.5*self.length*np.cos(self.theta_rad),
+        self.center[1] - 0.5*self.length*np.sin(self.theta_rad)]
+        self.center = np.array(self.center)
+        self.r_point = np.array(self.r_point)
+        self.l_point = np.array(self.l_point)
+        self.h_point = np.array(self.h_point)
+        self.t_point = np.array(self.t_point)
+
     def rover_draw(self, screen):
         BLACK = (0, 0, 0)
         GREEN = (0, 255, 0)
@@ -135,7 +153,7 @@ class Rover():
             obs.append(gradient.grad_xy_rgb(p[0], p[1]))
         obs = np.array(obs)
         obs = obs.astype(int)
-        obs = np.ndarray.flatten(obs)
+        #obs = np.ndarray.flatten(obs)
         return obs
 
     ### defines the reward for the current state/environment

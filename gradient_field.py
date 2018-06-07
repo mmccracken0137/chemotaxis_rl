@@ -18,9 +18,15 @@ class Grad_field():
     def grad_xy_rgb(self, xpos, ypos):
         ### this is eesentially the functional form of the color gradient...
         ### horizontal linear
-        r_val = (self.to_color[0] - self.from_color[0])*(xpos-self.border_width)/self.grad_width + self.from_color[0]
-        g_val = (self.to_color[1] - self.from_color[1])*(xpos-self.border_width)/self.grad_width + self.from_color[1]
-        b_val = (self.to_color[2] - self.from_color[2])*(xpos-self.border_width)/self.grad_width + self.from_color[2]
+
+        if xpos < self.border_width or xpos > self.border_width + self.grad_width:
+            r_val, g_val, b_val = 255, 255, 255
+        elif ypos < self.border_width or ypos > self.border_width + self.grad_height:
+            r_val, g_val, b_val = 255, 255, 255
+        else:
+            r_val = (self.to_color[0] - self.from_color[0])*(xpos-self.border_width)/self.grad_width + self.from_color[0]
+            g_val = (self.to_color[1] - self.from_color[1])*(xpos-self.border_width)/self.grad_width + self.from_color[1]
+            b_val = (self.to_color[2] - self.from_color[2])*(xpos-self.border_width)/self.grad_width + self.from_color[2]
 
         ### gaussian
         # cen = [self.total_width/2, self.total_height/3]
@@ -37,10 +43,6 @@ class Grad_field():
         if xpos < 0 or xpos >= self.total_width or ypos < 0 or ypos >= self.total_height:
             print('error: xy point is off screen:', xpos, ypos)
             sys.exit()
-        elif xpos < self.border_width or xpos > self.border_width + self.grad_width:
-            col = (255, 255, 255)
-        elif ypos < self.border_width or ypos > self.border_width + self.grad_height:
-            col = (255, 255, 255)
         else:
             col = self.grad_xy_rgb(xpos, ypos)
         return col
