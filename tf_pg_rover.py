@@ -2,6 +2,7 @@
 Policy-gradient chemotaxis learner
 ***MUST*** be run with pythonw in order to properly focus the window.
 Adapted from https://github.com/awjuliani/DeepRL-Agents/blob/master/Policy-Network.ipynb
+Also see Karpathy's blog: http://karpathy.github.io/2016/05/31/rl/
 '''
 
 import pygame
