@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 
 from chemo_rover import *
 from gradient_field import *
+from pg_agent import *
 
 gamma = 0.99
 def discount_rewards(r):
@@ -26,7 +27,7 @@ def discount_rewards(r):
         discounted_r[t] = running_add
     return discounted_r
 
-class agent():
+class pg_agent():
     def __init__(self, lr, s_size, a_size, h_size):
         ### establish feed-forward NN.  agent takes state and produces action
         self.state_in = tf.placeholder(shape=[None, s_size], dtype=tf.float32)
@@ -93,7 +94,7 @@ max_epis = 50
 
 for epi in range(max_epis):
     steps = 0
-    rover.force_position(300, 150, np.random.rand() * 360)
+    rover.reset_position(300, 150, np.random.rand() * 360)
     pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad.pixels))
     running = True
 
