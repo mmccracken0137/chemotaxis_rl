@@ -13,6 +13,7 @@ import sys
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 import matplotlib.pyplot as plt
+import pickle
 
 from chemo_rover import *
 from gradient_field import *
@@ -64,18 +65,18 @@ gamma = 0.99 # discount factor
 decay_rate = 0.99 # decay factor for RMSprop leaky sum of grad^2 ???
 resume = False # resume from previous trainng session?
 render = False # run visualization for each episode?
-stoch_choice = 0.2 # frequency that non-highest prob action will not be chosen (non-greedy choice)
+altruis = 0.2 # frequency that non-highest prob action will not be chosen (non-greedy choice)
 
 # model initialization
-n_inputs = 255 * 3 * 2
+n_inputs = 256 * 3 * 2
 n_actions = 9
 
 if resume:
     model = pickle.load(open('save.p', 'rb'))
 else:
     model = {}
-    model['W1'] = np.random.randn(n_hidden, n_inputs) / np.sqrt(n_inputs) # "Xavier" initialization
-    model['W2'] = np.random.randn(n_hidden, n_actions) / np.sqrt(n_hidden) # "Xavier" initialization
+    model['W1'] = np.random.randn(n_inputs, n_hidden) / np.sqrt(n_inputs) # Xavier init
+    model['W2'] = np.random.randn(n_hidden, n_actions) / np.sqrt(n_hidden)
 
 grad_buffer = {k : np.zeros_like(v) for k, v in model.items() } #update buffers that add up gradients over a batch
 rmsprop_cache = { k : np.zeros_like(v) for k, v in model.items() } # rmsprop memory
@@ -83,13 +84,25 @@ rmsprop_cache = { k : np.zeros_like(v) for k, v in model.items() } # rmsprop mem
 def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))
 
+def softmax(x):
+    ''' applies softmax to array of values '''
+    probs = []
+    sum = 0
+    max_x = np.amax(x)
+    for i in range(len(x)):
+        probs.append(np.exp(x[i] - max_x))
+        sum += probs[-1]
+    probs = np.array(probs)
+    probs /= sum
+    return probs
+
 def prepro(I):
     ''' prepro numpy array of two 3-element tuples into a one-hot list '''
     pro_I = np.zeros(n_inputs)
-    I = np.flatten(I)
+    I = np.ndarray.flatten(I)
     for i in range(len(I)): # this is so cute, I can't stand it
         pro_I[i*256 + I[i]] = 1
-    return pro_I.astye(np.float)
+    return pro_I.astype(np.float)
 
 def discount_rewards(r):
     ''' take 1d array of float rewards and compute discounted reward '''
@@ -101,26 +114,50 @@ def discount_rewards(r):
     return discounted_r
 
 def policy_forward(x):
-    h = np.dot(model['W1'], x) # dot input layer with first set of weights
+    h = x.dot(model['W1']) # dot input layer with first set of weights
     h[h<0] = 0 # ReLU, baby!!!
-    logp = np.dot(model['W2'], h) # dot second set of weights with hidden layer outputs to produce action probs
-    p = sigmoid(logp) # map sigmoid onto action probs
+    logp = h.dot(model['W2']) # dot second set of weights with hidden layer outputs to produce action probs
+    #p = sigmoid(logp) # map sigmoid onto action probs
+    p = softmax(logp)
     return p, h # return probs array and hidden state
 
 def policy_backward(epx, eph, epdlogp):
     ''' backward pass. (eph is array of intermediate hidden states) '''
-    dW2 = np.dot(eph.T, epdlogp).ravel()
-    dh = np.outer(epdlogp, model['W2'])
+    # dW2 = np.dot(eph.T, epdlogp).ravel()
+    # dh = np.outer(epdlogp, model['W2'])
+    # dh[eph <= 0] = 0 # backprop ReLU
+    # dW1 = np.dot(dh.T, epx)
+
+    # from etienne87
+    dW2 = eph.T.dot(epdlogp)
+    dh = epdlogp.dot(model['W2'].T)
     dh[eph <= 0] = 0 # backprop ReLU
-    dW1 = np.dot(dh.T, epx)
+    dW1 = epx.T.dot(dh)
+
     return {'W1': dW1, 'W2': dW2}
 
-def rover_actions(a_index):
-    ''' returns one of the nine rover actions for simplest case. think base 3. '''
-    a = divmod(i, 3)
+def rover_action(a_index):
+    ''' returns one of the nine rover actions for simplest case. think base 3. tens for left wheel, ones for right wheel. '''
+    a = divmod(a_index, 3)
     a = np.array(a)
     a[:] = [x - 1 for x in a]
     return a
+
+def rover_reward(obs, act):
+    ''' defines the reward function for the rover. observation is a list of color tuples. action is a pair of wheel motions. '''
+    reward = 0
+    if obs[0][0] == 255 and obs[0][1] < 10 and obs[0][2] < 10:
+        # reward if head is located in very red region... nutrient rich
+        reward += 1
+    elif obs[0][0] == 255 and obs[0][1] < 10 and obs[0][2] < 10:
+        # penalize if head is located in very pale region... nutirient poor
+        reward -= 1
+    else:
+        # penalize for motion... try to make the rover efficient... simulates energy consumption
+        penalty = -1e-3
+        reward += penalty * (abs(act[0]) + abs(act[1]))
+    return reward
+
 
 xs, hs, dlogps, drs = [], [], [], []
 running_reward = None
@@ -141,16 +178,16 @@ DRED  = (255,   0,   0)
 LRED  = (255, 245, 245)
 
 ### create gradient field
-size = (600,300)
+size = (600,400)
 border = 15
 screen = pygame.display.set_mode((size[0] + 2*border,
                                   size[1] + 2*border))
 pygame.display.set_caption("color field")
 
-grad = Grad_field(LRED, DRED, size[0], size[1], 15)
-grad.make_pixels()
+grad_field = Grad_field(LRED, DRED, size[0], size[1], 15)
+grad_field.make_pixels()
 screen.fill((255,255,255))
-pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad.pixels))
+pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad_field.pixels))
 
 ### initialize rover
 rover = Rover(int(size[0]/2), int(size[1]/2), np.random.rand() * 360, width = 20, length = 40)
@@ -162,7 +199,7 @@ max_epis = 2000
 for epi in range(max_epis):
     steps = 0
     rover.reset_position(300, 150, np.random.rand() * 360)
-    pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad.pixels))
+    pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad_field.pixels))
     running = True
 
     while running:
@@ -170,37 +207,96 @@ for epi in range(max_epis):
             clock.tick(60)
 
         # get rover obs and preprocess
-        x = prepro(rover.observation(grad, [rover.h_point, rover.t_point]))
-
+        x = prepro(rover.observation(grad_field, [rover.h_point, rover.t_point]))
+        #print('shape of x', x.shape)
         # forward policy network and sample an action from returned probabilities
         aprob, h = policy_forward(x)
-        if np.random.rand() > stoch_choice:
-            action = np.argmax(aprob)
+        # choose most probable action most of the time, dictated by (1-greed) factor
+        if np.random.rand() > altruis:
+            a_ind = np.argmax(aprob)
         else:
-            action = np.random.randint(0, n_actions)
+            a_ind = np.random.randint(0, n_actions)
 
-        TKTKTK line 83 of Karpathy
+        # record intermediates needed for backprop
+        xs.append(x) # observation
+        hs.append(h) # hidden state
+        y = a_ind # don't have the "correct" labelfor RL, so substitute the action that we sampled
+        #dlogps.append(y - aprob) # from Karpathy
+
+        # below is modified for multiple actions... see etienne87
+        dlogsoftmax = aprob.copy()
+        #print('dlogsoftmax shape', dlogsoftmax.shape)
+        dlogsoftmax[a_ind] -= 1 #-discounted reward
+        dlogps.append(dlogsoftmax)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False # Flag that we are done so we exit this loop
 
         # --- Game logic should go here ---> update
-        rover.dual_wheel_move(2, 2)
+        # update and observe, step rover.  Karpathy line 90-ish
+
+        action = rover_action(a_ind)
+        rover.dual_wheel_move(action[0], action[1])
         rover.update()
 
         # --- Drawing code should go here ---> draw
         if render:
             screen.fill((255,255,255))
-            pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad.pixels))
+            pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad_field.pixels))
             rover.rover_draw(screen)
             # --- Go ahead and update the screen with what we've drawn.
             pygame.display.flip()
 
         steps += 1
 
-        if np.array_equal([255, 255, 255], rover.observation(grad, [rover.h_point, rover.t_point])[0]):
+        #
+        obs = rover.observation(grad_field, [rover.h_point, rover.t_point])
+        reward = rover_reward(obs, action)
+        reward_sum += reward
+        drs.append(reward)
+        if np.array_equal([255, 255, 255], rover.observation(grad_field, [rover.h_point, rover.t_point])[0]):
             running = False
-    print(steps)
+
+        if running == False:
+            print('episode %d ended! reward: %f' % (epi, reward))
+            # stack together all inputs, hidden states, action grads, and reward for episode
+            epx = np.vstack(xs)
+            eph = np.vstack(hs)
+            epdlogp = np.vstack(dlogps)
+            epr = np.vstack(drs)
+            xs, hs, dlogps, drs = [], [], [], [] # reset array memory
+
+            # compute discounted reward
+            discounted_epr = discount_rewards(epr)
+            # standardize rewards to be unit norm
+            discounted_epr -= np.mean(discounted_epr)
+            discounted_epr /= np.std(discounted_epr)
+
+            # modulate the gradient with the advantage !!!
+            epdlogp *= discounted_epr
+            grad = policy_backward(epx, eph, epdlogp)
+            for k in model: grad_buffer[k] += grad[k] # accumulate grad over batch
+
+            # now we perform the rmsprop parameter update every time a batch is finished
+            if epi % batch_size == (batch_size - 1):
+                print('\nbatch ended --> back prop!\n')
+                for k, v in model.items():
+                    g = grad_buffer[k] # gradient
+                    rmsprop_cache[k] = decay_rate * rmsprop_cache[k] + (1 - decay_rate) * g**2
+                    model[k] += learning_rate * g / (np.sqrt(rmsprop_cache[k]) + 1e-5) # ???
+                    grad_buffer[k] = np.zeros_like(v) # reset batch gradient buffer
+
+            # book-keeping
+            if running_reward is None:
+                running_reward = reward_sum
+            else:
+                running_reward = running_reward * 0.99 + reward_sum * 0.01
+            print('episode took %d steps. epoisode reward total was %f. running mean: %f' % (steps, reward_sum, running_reward))
+            if epi % 100 == 0: pickle.dump(model, open('save.p', 'wb'))
+            reward_sum = 0
+            obs = None
+
+
 #Once we have exited the main program loop we can stop the game engine:
 pygame.quit()
