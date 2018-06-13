@@ -1,6 +1,6 @@
 '''
 Policy-gradient chemotaxis learner
-***MUST*** be run with pythonw in order to properly focus the window.
+***MUST*** be run with pythonw in order to properly focus the visualization window.
 Adapted from https://github.com/awjuliani/DeepRL-Agents/blob/master/Policy-Network.ipynb
 Also see Karpathy's blog: http://karpathy.github.io/2016/05/31/rl/
 ALSO see https://gist.github.com/karpathy/a4166c7fe253700972fcbc77e4ea32c5
@@ -11,50 +11,18 @@ import numpy as np
 import os
 import sys
 import tensorflow as tf
-import tensorflow.contrib.slim as slim
-import matplotlib.pyplot as plt
 import pickle
 
 from chemo_rover import *
 from gradient_field import *
-#from pg_agent import *
-
-# class pg_agent():
-#     def __init__(self, lr, s_size, a_size, h_size):
-#         ### establish feed-forward NN.  agent takes state and produces action
-#         self.state_in = tf.placeholder(shape=[None, s_size], dtype=tf.float32)
-#         hidden = slim.fully_connected(self.state_in, h_size, biases_initializer=None, activation_fn=tf.nn.relu)
-#         self.output = slim.fully_connected(hidden, a_size, activation_fn=tf.nn.softmax, biases_initializer=None)
-#         self.chosen_action = tf.argmax(self.output, 1)
-#
-#         '''
-#         establish training procedure. feed reward and chosen action into the network
-#         to compute the loss, and use it to update the network.
-#         '''
-#         self.reward_holder = tf.placeholder(shape=[None], dtpye=tf.float32)
-#         self.action_holder = tf.placeholder(shape=[None], dtype=tf.int32)
-#         self.indices = tf.range(0, tf.shape(self.output)[0]) + tf.shape(self.output)[1] + self.action_holder
-#         self.responsible_outputs = tf.gather(tf.reshape(self.output, [-1]), self.indices)
-#         self.loss = -tf.reduce_mean(tf.log(self.responsible_outputs) * self.reward_holder)
-#
-#         tvars = tf.trainable_variables()
-#         self.gradient_holders = []
-#         for idx,var in enumerate(tvars):
-#             placeholder = tf.placeholder(tf.float32, name=str(idx) + '_holder')
-#             self.gradient_holders.append(placeholder)
-#
-#         self.gradients = tf.gradients(self.loss, tvars)
-#
-#         optimizer = tf.train.AdamOptimizer(learning_rate=lr)
-#         self.update_batch = optimizer.apply_gradients(zip(self.gradient_holders, tvars))
 
 '''
 Set up a MLP with a single hidden layer.
 Input layer: This needs to take in the color value for each of the two sensors on the robot/cell (one at head, one at tail).  Each color is quantified by three (digitized) 8-bit values (0 to 255), so the input layer needs to have 255 * 3 * 2 = 1530 nodes.  Not sure if this will work as a one-hot input; might be able to get away with simply six input values...
 
-We'll give the hidden layer 200 neurons to start (copy Karpathy).
+We'll give the hidden layer 200 neurons to start.
 
-Actions will be simplest possible: each wheel can move forwards (+1), backward (-1), or not at all (0).  For two wheels, the total number of actions is 9.  This forces the wheels to move at only one speed.
+Actions will be simplest possible: each wheel can move forwards (+1), backward (-1), or not at all (0).  For two wheels, the action space has 9 elements.  This forces the wheels to move at only one speed.
 '''
 
 # hyperparameters
@@ -63,17 +31,22 @@ batch_size = 10 # run this many episodes before doing a parameter update
 learning_rate = 1e-3
 gamma = 0.99 # discount factor
 decay_rate = 0.99 # decay factor for RMSprop leaky sum of grad^2 ???
-resume = False # resume from previous trainng session?
-render = False # run visualization for each episode?
-altruis = 0.2 # frequency that non-highest prob action will not be chosen (non-greedy choice)
+render = True # False # run visualization for each episode?
+kindness = 0.2 # frequency that non-highest prob action will not be chosen (non-greedy choice)
+random_position_reset = True # reset the position of the rover randomly for each episode
+resume = True # False # resume from previous trainng session?
 
 # model initialization
 n_inputs = 256 * 3 * 2
 n_actions = 9
 
+# if we're going to pick up from a previous training session, load the model. otherwise initialize!
 if resume:
-    model = pickle.load(open('save.p', 'rb'))
+    save_file = sys.argv[1]
+    print('\nloading model from %s...\n' % save_file)
+    model = pickle.load(open(save_file, 'rb'))
 else:
+    print('\ninitializing fresh model...\n')
     model = {}
     model['W1'] = np.random.randn(n_inputs, n_hidden) / np.sqrt(n_inputs) # Xavier init
     model['W2'] = np.random.randn(n_hidden, n_actions) / np.sqrt(n_hidden)
@@ -122,13 +95,7 @@ def policy_forward(x):
     return p, h # return probs array and hidden state
 
 def policy_backward(epx, eph, epdlogp):
-    ''' backward pass. (eph is array of intermediate hidden states) '''
-    # dW2 = np.dot(eph.T, epdlogp).ravel()
-    # dh = np.outer(epdlogp, model['W2'])
-    # dh[eph <= 0] = 0 # backprop ReLU
-    # dW1 = np.dot(dh.T, epx)
-
-    # from etienne87
+    ''' backward pass. (eph is array of intermediate hidden states). see etienne87 '''
     dW2 = eph.T.dot(epdlogp)
     dh = epdlogp.dot(model['W2'].T)
     dh[eph <= 0] = 0 # backprop ReLU
@@ -137,7 +104,7 @@ def policy_backward(epx, eph, epdlogp):
     return {'W1': dW1, 'W2': dW2}
 
 def rover_action(a_index):
-    ''' returns one of the nine rover actions for simplest case. think base 3. tens for left wheel, ones for right wheel. '''
+    ''' returns one of the nine rover actions for simplest case. think base-3. tens for left wheel, ones for right wheel. '''
     a = divmod(a_index, 3)
     a = np.array(a)
     a[:] = [x - 1 for x in a]
@@ -158,47 +125,45 @@ def rover_reward(obs, act):
         reward += penalty * (abs(act[0]) + abs(act[1]))
     return reward
 
-
+# these objs will hold quantities for each episode
 xs, hs, dlogps, drs = [], [], [], []
 running_reward = None
 reward_sum = 0
 episode_number = 0
 
-# set up some visualization stuff
-os.environ['SDL_VIDEO_WINDOW_POS'] = "%d,%d" % (25, 25)
+# set up visualization
+os.environ['SDL_VIDEO_WINDOW_POS'] = "%d,%d" % (25, 25) # sets position of window
 pygame.init()
-
-BLACK = (0,   0,   0  )
-WHITE = (255, 255, 255)
-GREEN = (0,   255, 0  )
-RED   = (255, 0,   0  )
-DBLUE = (0,   0,   255)
-LBLUE = (245, 245, 255)
-DRED  = (255,   0,   0)
-LRED  = (255, 245, 245)
-
-### create gradient field
-size = (600,400)
+size = (400,300)
 border = 15
 screen = pygame.display.set_mode((size[0] + 2*border,
                                   size[1] + 2*border))
 pygame.display.set_caption("color field")
+clock = pygame.time.Clock()
 
+# create gradient field
+DRED  = (255,   0,   0)
+LRED  = (255, 245, 245)
 grad_field = Grad_field(LRED, DRED, size[0], size[1], 15)
 grad_field.make_pixels()
 screen.fill((255,255,255))
 pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad_field.pixels))
 
-### initialize rover
+# initialize rover
 rover = Rover(int(size[0]/2), int(size[1]/2), np.random.rand() * 360, width = 20, length = 40)
 
-clock = pygame.time.Clock()
-
-max_epis = 2000
+# number of episodes to run
+max_epis =8000
 
 for epi in range(max_epis):
     steps = 0
-    rover.reset_position(300, 150, np.random.rand() * 360)
+    if random_position_reset:
+        rover.reset_position(int(np.random.uniform(0.2, 0.8) * size[0]),
+                             int(np.random.uniform(0.2, 0.8) * size[1]), np.random.rand() * 360)
+    else:
+        rover.reset_position(int(size[0] / 2.0),
+                             int(size[1] / 2.0), np.random.rand() * 360)
+
     pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad_field.pixels))
     running = True
 
@@ -208,11 +173,11 @@ for epi in range(max_epis):
 
         # get rover obs and preprocess
         x = prepro(rover.observation(grad_field, [rover.h_point, rover.t_point]))
-        #print('shape of x', x.shape)
-        # forward policy network and sample an action from returned probabilities
+
+        # forward policy network and get probabilities for actions
         aprob, h = policy_forward(x)
         # choose most probable action most of the time, dictated by (1-greed) factor
-        if np.random.rand() > altruis:
+        if np.random.rand() > kindness:
             a_ind = np.argmax(aprob)
         else:
             a_ind = np.random.randint(0, n_actions)
@@ -221,12 +186,10 @@ for epi in range(max_epis):
         xs.append(x) # observation
         hs.append(h) # hidden state
         y = a_ind # don't have the "correct" labelfor RL, so substitute the action that we sampled
-        #dlogps.append(y - aprob) # from Karpathy
 
         # below is modified for multiple actions... see etienne87
         dlogsoftmax = aprob.copy()
-        #print('dlogsoftmax shape', dlogsoftmax.shape)
-        dlogsoftmax[a_ind] -= 1 #-discounted reward
+        dlogsoftmax[a_ind] -= 1 # discounted reward
         dlogps.append(dlogsoftmax)
 
         for event in pygame.event.get():
@@ -255,11 +218,19 @@ for epi in range(max_epis):
         reward = rover_reward(obs, action)
         reward_sum += reward
         drs.append(reward)
+
+        # end the episode if either the head or the tail enter the boundary
         if np.array_equal([255, 255, 255], rover.observation(grad_field, [rover.h_point, rover.t_point])[0]):
+            running = False
+        if np.array_equal([255, 255, 255], rover.observation(grad_field, [rover.h_point, rover.t_point])[1]):
+            running = False
+
+        # end the episode if the number of steps gets too large
+        if steps > 20000:
             running = False
 
         if running == False:
-            print('episode %d ended! reward: %f' % (epi, reward))
+            #print('episode %d ended! reward: %f' % (epi, reward_sum))
             # stack together all inputs, hidden states, action grads, and reward for episode
             epx = np.vstack(xs)
             eph = np.vstack(hs)
@@ -292,8 +263,11 @@ for epi in range(max_epis):
                 running_reward = reward_sum
             else:
                 running_reward = running_reward * 0.99 + reward_sum * 0.01
-            print('episode took %d steps. epoisode reward total was %f. running mean: %f' % (steps, reward_sum, running_reward))
+            print('episode %d took %d steps. episode reward total was %f. running mean: %f' % (epi, steps, reward_sum, running_reward))
+
+            # pickle every 100 episodes
             if epi % 100 == 0: pickle.dump(model, open('save.p', 'wb'))
+
             reward_sum = 0
             obs = None
 
