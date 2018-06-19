@@ -18,26 +18,30 @@ from gradient_field import *
 
 '''
 Set up a MLP with a single hidden layer.
-Input layer: This needs to take in the color value for each of the two sensors on the robot/cell (one at head, one at tail).  Each color is quantified by three (digitized) 8-bit values (0 to 255), so the input layer needs to have 255 * 3 * 2 = 1530 nodes.  Not sure if this will work as a one-hot input; might be able to get away with simply six input values...
+Input layer: This needs to take in the color value for each of the two sensors on the robot/cell (one at head, one at tail).
 
-We'll give the hidden layer 200 neurons to start.
+We'll give the hidden layer 50 neurons to start.
 
 Actions will be simplest possible: each wheel can move forwards (+1), backward (-1), or not at all (0).  For two wheels, the action space has 9 elements.  This forces the wheels to move at only one speed.
 '''
 
 # hyperparameters
-n_hidden = 200 # number of nodes in the hidden layer
+n_hidden = 100 # number of nodes in the hidden layer
 batch_size = 10 # run this many episodes before doing a parameter update
 learning_rate = 1e-3
 gamma = 0.99 # discount factor
 decay_rate = 0.99 # decay factor for RMSprop leaky sum of grad^2 ???
-render = True # False # run visualization for each episode?
-kindness = 0.2 # frequency that non-highest prob action will not be chosen (non-greedy choice)
+kindness = 0.2 # frequency that non-highest prob action will not be chosen (non-greedy choice)  ALERT ALERT this may not work for multi-output nets (i.e. >2 possible actions)...
 random_position_reset = True # reset the position of the rover randomly for each episode
-resume = True # False # resume from previous trainng session?
+
+# render = False # run visualization for each episode?
+# resume = False # resume from previous trainng session?
+render = True # run visualization for each episode?
+resume = False # resume from previous trainng session?
+
 
 # model initialization
-n_inputs = 256 * 3 * 2
+n_inputs = 3 * 2
 n_actions = 9
 
 # if we're going to pick up from a previous training session, load the model. otherwise initialize!
@@ -48,8 +52,9 @@ if resume:
 else:
     print('\ninitializing fresh model...\n')
     model = {}
-    model['W1'] = np.random.randn(n_inputs, n_hidden) / np.sqrt(n_inputs) # Xavier init
-    model['W2'] = np.random.randn(n_hidden, n_actions) / np.sqrt(n_hidden)
+    # will try to multiply in the following order: h = W1.x, y = W2.h.  This dictates the dimension of the weights matrices.
+    model['W1'] = np.random.randn(n_hidden, n_inputs) / np.sqrt(n_inputs) # Xavier init
+    model['W2'] = np.random.randn(n_actions, n_hidden) / np.sqrt(n_hidden)
 
 grad_buffer = {k : np.zeros_like(v) for k, v in model.items() } #update buffers that add up gradients over a batch
 rmsprop_cache = { k : np.zeros_like(v) for k, v in model.items() } # rmsprop memory
@@ -63,19 +68,18 @@ def softmax(x):
     sum = 0
     max_x = np.amax(x)
     for i in range(len(x)):
-        probs.append(np.exp(x[i] - max_x))
-        sum += probs[-1]
+        ex = np.exp(x[i] - max_x)
+        probs.append(ex)
+        sum += ex
     probs = np.array(probs)
     probs /= sum
     return probs
 
 def prepro(I):
     ''' prepro numpy array of two 3-element tuples into a one-hot list '''
-    pro_I = np.zeros(n_inputs)
     I = np.ndarray.flatten(I)
-    for i in range(len(I)): # this is so cute, I can't stand it
-        pro_I[i*256 + I[i]] = 1
-    return pro_I.astype(np.float)
+    I = I / 255.0
+    return I.astype(np.float)
 
 def discount_rewards(r):
     ''' take 1d array of float rewards and compute discounted reward '''
@@ -87,20 +91,26 @@ def discount_rewards(r):
     return discounted_r
 
 def policy_forward(x):
-    h = x.dot(model['W1']) # dot input layer with first set of weights
+    h = np.dot(model['W1'], x) # multiply W1 by input layer
     h[h<0] = 0 # ReLU, baby!!!
-    logp = h.dot(model['W2']) # dot second set of weights with hidden layer outputs to produce action probs
-    #p = sigmoid(logp) # map sigmoid onto action probs
+    logp = np.dot(model['W2'], h) # multiply W2 and hidden layer
     p = softmax(logp)
+    ### TEST
+    # p = np.random.rand(n_actions)
+    # p = p / p.sum()
     return p, h # return probs array and hidden state
 
 def policy_backward(epx, eph, epdlogp):
     ''' backward pass. (eph is array of intermediate hidden states). see etienne87 '''
-    dW2 = eph.T.dot(epdlogp)
-    dh = epdlogp.dot(model['W2'].T)
-    dh[eph <= 0] = 0 # backprop ReLU
-    dW1 = epx.T.dot(dh)
+    # dW2 = eph.T.dot(epdlogp)
+    # dh = epdlogp.dot(model['W2'].T)
+    # dh[eph <= 0] = 0 # backprop ReLU
+    # dW1 = epx.T.dot(dh)
 
+    dW2 = np.dot(eph.T, epdlogp).T #ravel()  # TKTK from stackexchange!!!
+    dh = np.dot(epdlogp, model['W2']) # np.outer(epdlogp, model['W2'])
+    dh[eph <= 0] = 0 # backprop ReLU nonlinearity
+    dW1 = np.dot(dh.T, epx)
     return {'W1': dW1, 'W2': dW2}
 
 def rover_action(a_index):
@@ -108,21 +118,40 @@ def rover_action(a_index):
     a = divmod(a_index, 3)
     a = np.array(a)
     a[:] = [x - 1 for x in a]
+    a = -1.0*a
     return a
 
 def rover_reward(obs, act):
     ''' defines the reward function for the rover. observation is a list of color tuples. action is a pair of wheel motions. '''
-    reward = 0
-    if obs[0][0] == 255 and obs[0][1] < 10 and obs[0][2] < 10:
+    reward = 0.0
+    # if obs[0][0] == 255 and obs[0][1] < 10 and obs[0][2] < 10:
+    #     # reward if head is located in very red region... nutrient rich
+    #     reward += 1
+    # elif obs[0][0] == 255 and obs[0][1] < 10 and obs[0][2] < 10:
+    #     # penalize if head is located in very pale region... nutirient poor
+    #     reward -= 1
+
+    # try summing the six values in the observation.  Dark red equates to a sum near 255 + 255 = 510.  Less good values would be greater than this.
+    # sum = np.sum(np.ndarray.flatten(obs))
+    # reward += 1e-2 * (2 - sum/550.0) # returns 1 if maximum redness
+
+    #print(obs[0][0], obs[0][1], obs[0][2])
+    # reward the head position
+    # if obs[0][0] == 255 and obs[0][1] < 40 and obs[0][2] < 40:
+    #     # reward if head is located in very red region... nutrient rich
+    #     reward += 1
+    if obs[0][1] < 50:
         # reward if head is located in very red region... nutrient rich
         reward += 1
-    elif obs[0][0] == 255 and obs[0][1] < 10 and obs[0][2] < 10:
-        # penalize if head is located in very pale region... nutirient poor
-        reward -= 1
-    else:
-        # penalize for motion... try to make the rover efficient... simulates energy consumption
-        penalty = -1e-3
-        reward += penalty * (abs(act[0]) + abs(act[1]))
+
+    # punish leaving the field
+    # if np.array_equal([255, 255, 255], obs[0]) or np.array_equal([255, 255, 255], obs[1]):
+    #     reward -= 1
+
+    # # moving violation...
+    # penalty = -1e-3
+    # reward += penalty * (abs(act[0]) + abs(act[1]))
+
     return reward
 
 # these objs will hold quantities for each episode
@@ -153,13 +182,16 @@ pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad_fiel
 rover = Rover(int(size[0]/2), int(size[1]/2), np.random.rand() * 360, width = 20, length = 40)
 
 # number of episodes to run
-max_epis =8000
+max_epis =80000
+epi = 0
 
-for epi in range(max_epis):
+while epi < max_epis:
+    epi += 1
     steps = 0
     if random_position_reset:
-        rover.reset_position(int(np.random.uniform(0.2, 0.8) * size[0]),
-                             int(np.random.uniform(0.2, 0.8) * size[1]), np.random.rand() * 360)
+        rover.reset_position(int(np.random.uniform(0.2, 0.5) * size[0]),
+                             int(np.random.uniform(0.2, 0.8) * size[1]),
+                             np.random.rand() * 360)
     else:
         rover.reset_position(int(size[0] / 2.0),
                              int(size[1] / 2.0), np.random.rand() * 360)
@@ -173,19 +205,30 @@ for epi in range(max_epis):
 
         # get rover obs and preprocess
         x = prepro(rover.observation(grad_field, [rover.h_point, rover.t_point]))
+        #print(x)
 
         # forward policy network and get probabilities for actions
         aprob, h = policy_forward(x)
-        # choose most probable action most of the time, dictated by (1-greed) factor
-        if np.random.rand() > kindness:
-            a_ind = np.argmax(aprob)
-        else:
-            a_ind = np.random.randint(0, n_actions)
+
+        # # choose most probable action most of the time, dictated by (1-greed) factor
+        # This probably doesn't work for multiple output nodes/actions...
+        # if np.random.rand() > kindness:
+        #     a_ind = np.argmax(aprob)
+        # else:
+        #     a_ind = np.random.randint(0, n_actions)
+
+        # This should be more comprehensive than the above... etienne87
+        # roll the dice, in the softmax loss
+        u = np.random.uniform()
+        aprob_cum = np.cumsum(aprob)
+        a_ind = np.where(u <= aprob_cum)[0][0]
+        #print(u, a, aprob_cum)
 
         # record intermediates needed for backprop
         xs.append(x) # observation
         hs.append(h) # hidden state
-        y = a_ind # don't have the "correct" labelfor RL, so substitute the action that we sampled
+        y = np.zeros_like(aprob) #a_ind
+        y[a_ind] = 1 # don't have the "correct" labelfor RL, so substitute the action that we sampled
 
         # below is modified for multiple actions... see etienne87
         dlogsoftmax = aprob.copy()
@@ -226,12 +269,18 @@ for epi in range(max_epis):
             running = False
 
         # end the episode if the number of steps gets too large
-        if steps > 20000:
+        if steps > 5000:
             running = False
 
         if running == False:
+            drs[-1] += -1e-9 # need some very small but non-zero reward/penalty for backprop
             #print('episode %d ended! reward: %f' % (epi, reward_sum))
             # stack together all inputs, hidden states, action grads, and reward for episode
+
+            # print('aprob shape', aprob.shape)
+            # print(model['W1'].shape, x.shape, h.shape, model['W2'].shape, aprob.shape, y.shape)
+            print(aprob)
+
             epx = np.vstack(xs)
             eph = np.vstack(hs)
             epdlogp = np.vstack(dlogps)
@@ -246,11 +295,12 @@ for epi in range(max_epis):
 
             # modulate the gradient with the advantage !!!
             epdlogp *= discounted_epr
+            # print(epx.shape, eph.shape, epdlogp.shape, discounted_epr.shape)
             grad = policy_backward(epx, eph, epdlogp)
             for k in model: grad_buffer[k] += grad[k] # accumulate grad over batch
 
             # now we perform the rmsprop parameter update every time a batch is finished
-            if epi % batch_size == (batch_size - 1):
+            if epi % batch_size == 0:
                 print('\nbatch ended --> back prop!\n')
                 for k, v in model.items():
                     g = grad_buffer[k] # gradient
@@ -264,6 +314,7 @@ for epi in range(max_epis):
             else:
                 running_reward = running_reward * 0.99 + reward_sum * 0.01
             print('episode %d took %d steps. episode reward total was %f. running mean: %f' % (epi, steps, reward_sum, running_reward))
+            # print('episode %d. episode reward total was %f. running mean: %f' % (epi, reward_sum, running_reward))
 
             # pickle every 100 episodes
             if epi % 100 == 0: pickle.dump(model, open('save.p', 'wb'))

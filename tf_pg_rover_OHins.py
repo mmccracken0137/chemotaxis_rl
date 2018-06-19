@@ -20,21 +20,21 @@ from gradient_field import *
 Set up a MLP with a single hidden layer.
 Input layer: This needs to take in the color value for each of the two sensors on the robot/cell (one at head, one at tail).  Each color is quantified by three (digitized) 8-bit values (0 to 255), so the input layer needs to have 255 * 3 * 2 = 1530 nodes.  Not sure if this will work as a one-hot input; might be able to get away with simply six input values...
 
-We'll give the hidden layer 200 neurons to start.
+We'll give the hidden layer 50 neurons to start.
 
 Actions will be simplest possible: each wheel can move forwards (+1), backward (-1), or not at all (0).  For two wheels, the action space has 9 elements.  This forces the wheels to move at only one speed.
 '''
 
 # hyperparameters
-n_hidden = 200 # number of nodes in the hidden layer
+n_hidden = 50 # number of nodes in the hidden layer
 batch_size = 10 # run this many episodes before doing a parameter update
 learning_rate = 1e-3
 gamma = 0.99 # discount factor
 decay_rate = 0.99 # decay factor for RMSprop leaky sum of grad^2 ???
-render = True # False # run visualization for each episode?
+render = False # run visualization for each episode?
 kindness = 0.2 # frequency that non-highest prob action will not be chosen (non-greedy choice)
 random_position_reset = True # reset the position of the rover randomly for each episode
-resume = True # False # resume from previous trainng session?
+resume = False # resume from previous trainng session?
 
 # model initialization
 n_inputs = 256 * 3 * 2
@@ -48,8 +48,9 @@ if resume:
 else:
     print('\ninitializing fresh model...\n')
     model = {}
-    model['W1'] = np.random.randn(n_inputs, n_hidden) / np.sqrt(n_inputs) # Xavier init
-    model['W2'] = np.random.randn(n_hidden, n_actions) / np.sqrt(n_hidden)
+    # will try to multiply in the following order: h = W1.x, y = W2.h.  This dictates the dimension of the weights matrices.
+    model['W1'] = np.random.randn(n_hidden, n_inputs) / np.sqrt(n_inputs) # Xavier init
+    model['W2'] = np.random.randn(n_actions, n_hidden) / np.sqrt(n_hidden)
 
 grad_buffer = {k : np.zeros_like(v) for k, v in model.items() } #update buffers that add up gradients over a batch
 rmsprop_cache = { k : np.zeros_like(v) for k, v in model.items() } # rmsprop memory
@@ -63,8 +64,9 @@ def softmax(x):
     sum = 0
     max_x = np.amax(x)
     for i in range(len(x)):
-        probs.append(np.exp(x[i] - max_x))
-        sum += probs[-1]
+        ex = np.exp(x[i])
+        probs.append(ex)
+        sum += ex
     probs = np.array(probs)
     probs /= sum
     return probs
@@ -87,19 +89,26 @@ def discount_rewards(r):
     return discounted_r
 
 def policy_forward(x):
-    h = x.dot(model['W1']) # dot input layer with first set of weights
+    #h = x.dot(model['W1']) # dot input layer with first set of weights
+    h = np.dot(model['W1'], x) # multiply W1 by input layer
     h[h<0] = 0 # ReLU, baby!!!
-    logp = h.dot(model['W2']) # dot second set of weights with hidden layer outputs to produce action probs
+    #logp = h.dot(model['W2']) # dot second set of weights with hidden layer outputs to produce action probs
+    logp = np.dot(model['W2'], h) # multiply W2 and hidden layer
     #p = sigmoid(logp) # map sigmoid onto action probs
     p = softmax(logp)
     return p, h # return probs array and hidden state
 
 def policy_backward(epx, eph, epdlogp):
     ''' backward pass. (eph is array of intermediate hidden states). see etienne87 '''
-    dW2 = eph.T.dot(epdlogp)
-    dh = epdlogp.dot(model['W2'].T)
-    dh[eph <= 0] = 0 # backprop ReLU
-    dW1 = epx.T.dot(dh)
+    # dW2 = eph.T.dot(epdlogp)
+    # dh = epdlogp.dot(model['W2'].T)
+    # dh[eph <= 0] = 0 # backprop ReLU
+    # dW1 = epx.T.dot(dh)
+
+    dW2 = np.dot(eph.T, epdlogp).ravel()
+    dh = np.outer(epdlogp, model['W2'])
+    dh[eph <= 0] = 0
+    dW1 = np.dot(dh.T, epx)
 
     return {'W1': dW1, 'W2': dW2}
 
@@ -113,16 +122,18 @@ def rover_action(a_index):
 def rover_reward(obs, act):
     ''' defines the reward function for the rover. observation is a list of color tuples. action is a pair of wheel motions. '''
     reward = 0
-    if obs[0][0] == 255 and obs[0][1] < 10 and obs[0][2] < 10:
-        # reward if head is located in very red region... nutrient rich
-        reward += 1
-    elif obs[0][0] == 255 and obs[0][1] < 10 and obs[0][2] < 10:
-        # penalize if head is located in very pale region... nutirient poor
-        reward -= 1
-    else:
-        # penalize for motion... try to make the rover efficient... simulates energy consumption
-        penalty = -1e-3
-        reward += penalty * (abs(act[0]) + abs(act[1]))
+    # if obs[0][0] == 255 and obs[0][1] < 10 and obs[0][2] < 10:
+    #     # reward if head is located in very red region... nutrient rich
+    #     reward += 1
+    # elif obs[0][0] == 255 and obs[0][1] < 10 and obs[0][2] < 10:
+    #     # penalize if head is located in very pale region... nutirient poor
+    #     reward -= 1
+
+    # try summing the six values in the observation.  Dark red equates to a sum near 255 + 255 = 510.  Less good values would be greater than this.
+    sum = np.sum(np.ndarray.flatten(obs))
+    reward += 1e-2 * (2 - sum/550.0) # returns 1 if maximum redness
+    penalty = -1e-3
+    reward += penalty * (abs(act[0]) + abs(act[1]))
     return reward
 
 # these objs will hold quantities for each episode
@@ -185,7 +196,8 @@ for epi in range(max_epis):
         # record intermediates needed for backprop
         xs.append(x) # observation
         hs.append(h) # hidden state
-        y = a_ind # don't have the "correct" labelfor RL, so substitute the action that we sampled
+        y = np.zeros_like(aprob) #a_ind
+        y[a_ind] = 1 # don't have the "correct" labelfor RL, so substitute the action that we sampled
 
         # below is modified for multiple actions... see etienne87
         dlogsoftmax = aprob.copy()
