@@ -29,18 +29,19 @@ LRED  = (255, 245, 245)
 
 ### create gradient field
 size = (600,300)
-border = 15
+border = 0
 screen = pygame.display.set_mode((size[0] + 2*border,
                                   size[1] + 2*border))
 pygame.display.set_caption("color field")
 
-grad = Grad_field(LRED, DRED, size[0], size[1], 15)
+grad = Grad_field(LRED, DRED, size[0], size[1], border)
 grad.make_pixels()
 screen.fill((255,255,255))
 pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad.pixels))
 
 ### initialize rover
-rover = Rover(int(size[0]/2), int(size[1]/2), np.random.rand() * 360, width = 20, length = 40)
+rover = Rover(int(size[0]/2), int(size[1]/2), np.random.rand() * 2 * np.pi, width = 20, length = 40)
+rover.reset_position(300, 150, np.random.rand() * 2 * np.pi)
 
 clock = pygame.time.Clock()
 
@@ -48,7 +49,6 @@ max_epis = 50
 
 for epi in range(max_epis):
     steps = 0
-    rover.reset_position(300, 150, np.random.rand() * 360)
     pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad.pixels))
     running = True
 
@@ -62,13 +62,19 @@ for epi in range(max_epis):
         # --- Game logic should go here ---> update
         #rover.rotate_left(1)
         #all_sprites.update()
+        #rover.dual_wheel_move(2*np.random.rand(), 2*np.random.rand())
+        #rover.dual_wheel_move(2, 2)
+        rover.manual_rotate()
+        if border == 0:
+            rover.box_norm_vertical(grad)
+        elif np.array_equal([255, 255, 255], rover.observation(grad, [rover.h_point, rover.t_point])[0]):
+            running = False
+
+        rover.update()
 
         # --- Drawing code should go here ---> draw
         screen.fill((255,255,255))
         pygame.surfarray.blit_array(screen, pygame.surfarray.map_array(screen, grad.pixels))
-        #rover.dual_wheel_move(2*np.random.rand(), 2*np.random.rand())
-        rover.dual_wheel_move(2, 2)
-        rover.update()
         rover.rover_draw(screen)
         #print(rover.observation(grad, [rover.h_point, rover.t_point])[0])
 
@@ -77,8 +83,7 @@ for epi in range(max_epis):
 
         steps += 1
 
-        if np.array_equal([255, 255, 255], rover.observation(grad, [rover.h_point, rover.t_point])[0]):
-            running = False
+    rover.reset_position(300, 150, np.random.rand() * 2 * np.pi)
 
 #Once we have exited the main program loop we can stop the game engine:
 pygame.quit()
